@@ -19,6 +19,7 @@ package org.apache.dolphinscheduler.plugin.task.http;
 
 import static org.apache.dolphinscheduler.plugin.task.api.TaskConstants.EXIT_CODE_FAILURE;
 import static org.apache.dolphinscheduler.plugin.task.api.TaskConstants.EXIT_CODE_SUCCESS;
+import static org.apache.http.HttpHeaders.AUTHORIZATION;
 
 import org.apache.dolphinscheduler.plugin.task.api.TaskExecutionContext;
 import org.apache.dolphinscheduler.plugin.task.api.enums.DataType;
@@ -30,10 +31,13 @@ import org.apache.commons.io.IOUtils;
 import org.apache.http.HttpStatus;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 
 import okhttp3.HttpUrl;
@@ -65,6 +69,8 @@ public class HttpTaskTest {
     private static final String MOCK_DISPATCH_PATH_REQ_BODY_TO_RES_BODY = "/requestBody/to/responseBody";
 
     private static final String MOCK_DISPATCH_PATH_REQ_PARAMS_TO_RES_BODY = "/requestParams/to/responseBody";
+
+    private static final String MOCK_DISPATCH_PATH_REQ_BASIC_AUTH = "/basicAuth";
 
     private final List<MockWebServer> mockWebServers = new ArrayList<>();
 
@@ -158,6 +164,21 @@ public class HttpTaskTest {
     }
 
     @Test
+    public void testBasicAuthWithHttpBodyParams() throws Exception {
+        Random random = new Random();
+        String username = "username" + random.nextInt(1000);
+        String password = "password" + random.nextInt(1000);
+        String auth = username + ":" + password;
+        byte[] encodedAuth = Base64.getEncoder().encode(auth.getBytes(StandardCharsets.UTF_8));
+        String basicAuthHeader = "Basic " + new String(encodedAuth);
+        HttpTask httpTask =
+                generateBasicAuthHttpTask(username, password, MOCK_DISPATCH_PATH_REQ_BASIC_AUTH, HttpMethod.POST,
+                        HttpCheckCondition.BODY_CONTAINS, basicAuthHeader, HttpStatus.SC_OK, "");
+        httpTask.handle(null);
+        Assertions.assertEquals(EXIT_CODE_SUCCESS, httpTask.getExitStatusCode());
+    }
+
+    @Test
     public void testHandleWithHttpParameterParams() throws Exception {
         List<HttpProperty> httpParams = new ArrayList<>();
         HttpProperty property = new HttpProperty();
@@ -222,6 +243,33 @@ public class HttpTaskTest {
         return generateHttpTaskFromParamData(paramData, prepareParamsMap);
     }
 
+    private HttpTask generateBasicAuthHttpTask(String username, String password, String mockPath, HttpMethod httpMethod,
+                                               HttpCheckCondition httpCheckConditionType,
+                                               String condition, int actualResponseCode,
+                                               String actualResponseBody) throws IOException {
+        String url = withMockWebServer(mockPath, actualResponseCode, actualResponseBody);
+        String paramData =
+                generateBasicAuthHttpParameters(username, password, url, httpMethod, httpCheckConditionType, condition);
+        return generateHttpTaskFromParamData(paramData, new HashMap<>());
+    }
+
+    private String generateBasicAuthHttpParameters(String username, String password, String url, HttpMethod httpMethod,
+                                                   HttpCheckCondition httpCheckConditionType,
+                                                   String condition) throws JsonProcessingException {
+        ObjectMapper mapper = new ObjectMapper();
+        HttpParameters httpParameters = new HttpParameters();
+        httpParameters.setUrl(url);
+        httpParameters.setHttpMethod(httpMethod);
+        httpParameters.setHttpCheckCondition(httpCheckConditionType);
+        httpParameters.setCondition(condition);
+        httpParameters.setConnectTimeout(10000);
+        httpParameters.setSocketTimeout(10000);
+        httpParameters.setEnableProxy(true);
+        httpParameters.setUser(username);
+        httpParameters.setPassword(password);
+        return mapper.writeValueAsString(httpParameters);
+    }
+
     private HttpTask generateHttpTaskFromParamData(String paramData, Map<String, String> prepareParamsMap) {
         TaskExecutionContext taskExecutionContext = Mockito.mock(TaskExecutionContext.class);
         Mockito.when(taskExecutionContext.getTaskParams()).thenReturn(paramData);
@@ -279,6 +327,9 @@ public class HttpTaskTest {
                     } catch (JsonProcessingException e) {
                         throw new IllegalArgumentException(e);
                     }
+                } else if (request.getPath().startsWith(MOCK_DISPATCH_PATH_REQ_BASIC_AUTH)) {
+                    String basicAuth = request.getHeader(AUTHORIZATION);
+                    mockResponse.setBody(basicAuth == null ? "" : basicAuth);
                 } else if (request.getPath().startsWith(path)) {
                     mockResponse.setBody(actualResponseBody);
                 } else {
